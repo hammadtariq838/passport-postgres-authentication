@@ -3,46 +3,32 @@ const pool = require("./db.js");
 var LocalStrategy = require("passport-local").Strategy;
 
 module.exports = function (passport) {
-  passport.serializeUser(function (user, done) {
-    done(null, user);
-  });
-  passport.deserializeUser(function (user, done) {
-    done(null, user);
-  });
-
+  // register local strategy
   passport.use(
     "login",
     new LocalStrategy(
       {
+        usernameField: "email",
+        passwordField: "password",
         passReqToCallback: true,
       },
-      function (req, username, password, done) {
-        loginUser();
-        async function loginUser() {
-          const client = await pool.connect();
-          client.query(
-            'SELECT id, "username", "password" FROM "users" WHERE "username"=$1',
-            [username],
-            (err, result) => {
-              if (err) {
-                return done(err);
-              }
-
-              if (result.rows[0] == null) {
-                return done(
-                  null,
-                  false,
-                  req.flash("message", "Incorrect username or password")
-                );
-              } else {
-                return done(
-                  null,
-                  result.rows[0],
-                  req.flash("message", "Logged in successfully")
-                );
-              }
-            }
+      async (req, email, password, done) => {
+        try {
+          const user = await pool.query(
+            "SELECT * FROM users WHERE email = $1",
+            [email]
           );
+          if (!user.rows[0]) {
+            req.flash("error", "Email not registered");
+            return done(null, false);
+          }
+          if (!(await bcrypt.compare(password, user.rows[0].password))) {
+            req.flash("error", "Incorrect password");
+            return done(null, false);
+          }
+          return done(null, user.rows[0]);
+        } catch (e) {
+          return done(e);
         }
       }
     )
@@ -52,105 +38,81 @@ module.exports = function (passport) {
     "register",
     new LocalStrategy(
       {
-        usernameField: "username",
+        usernameField: "email",
         passwordField: "password",
         passReqToCallback: true,
       },
-      function (req, username, password, done) {
-        registerUser();
-        async function registerUser() {
-          const client = await pool.connect();
-          client.query(
-            "SELECT id FROM users WHERE username=($1)",
-            [req.body.username],
-            (err, result) => {
-              if (err) {
-                return done(err);
-              }
-              if (result.rows[0]) {
-                return done(
-                  null,
-                  false,
-                  req.flash("message", "Sorry, this username is already taken.")
-                );
-              } else {
-                client.query(
-                  "INSERT INTO users (username, password) VALUES ($1, $2)",
-                  [req.body.username, password],
-                  (err, result) => {
-                    if (err) {
-                      console.log(err);
-                    } else {
-                      console.log(
-                        "User [" + req.body.username + "] has registered."
-                      );
-                      return done(null, { username: req.body.username });
-                    }
-                  }
-                );
-              }
-            }
+      async (req, email, password, done) => {
+        try {
+          const user = await pool.query(
+            "SELECT * FROM users WHERE email = $1",
+            [email]
           );
+          if (user.rows[0]) {
+            req.flash("error", "Email already registered");
+            return done(null, false);
+          }
+          const hashedPassword = await bcrypt.hash(password, 10);
+          const newUser = await pool.query(
+            "INSERT INTO users (email, password) VALUES ($1, $2) RETURNING *",
+            [email, hashedPassword]
+          );
+          return done(null, newUser.rows[0]);
+        } catch (e) {
+          return done(e);
         }
       }
     )
   );
 
+  // update password
   passport.use(
     "updatePassword",
     new LocalStrategy(
       {
-        usernameField: "password",
-        passwordField: "newpass",
+        usernameField: "email",
+        passwordField: "password",
         passReqToCallback: true,
       },
-      function (req, password, newpass, done) {
-        updatePassword();
-        async function updatePassword() {
-          const client = await pool.connect();
-          client.query(
-            'SELECT id, "username", "password" FROM "users" WHERE "username"=$1',
-            [req.user.username],
-            (err, result) => {
-              if (err) {
-                return done(err);
-              }
-
-              if (result.rows[0] == null) {
-                return done(
-                  null,
-                  false,
-                  req.flash(
-                    "message",
-                    "Error on changing password. Please try again"
-                  )
-                );
-              } else {
-                client.query(
-                  "UPDATE users SET password=($1) WHERE username=($2)",
-                  [newpass, req.user.username],
-                  (err, result) => {
-                    if (err) {
-                      console.log(err);
-                    } else {
-                      console.log(
-                        "User [" +
-                          req.user.username +
-                          "] has updated their password."
-                      );
-                      return done(
-                        null,
-                        { username: req.user.username },
-                        req.flash("message", "Your password has been updated.")
-                      );
-                    }
-                  }
-                );
-              }
-            }
+      async (req, email, password, done) => {
+        try {
+          const user = await pool.query(
+            "SELECT * FROM users WHERE email = $1",
+            [email]
           );
+          if (!user.rows[0]) {
+            req.flash("error", "Email not registered");
+            return done(null, false);
+          }
+          if (!(await bcrypt.compare(password, user.rows[0].password))) {
+            req.flash("error", "Incorrect password");
+            return done(null, false);
+          }
+          const hashedPassword = await bcrypt.hash(password, 10);
+          const newUser = await pool.query(
+            "UPDATE users SET password = $1 WHERE email = $2 RETURNING *",
+            [hashedPassword, email]
+          );
+          return done(null, newUser.rows[0]);
+        } catch (e) {
+          return done(e);
         }
       }
     )
   );
+
+  // serialize user
+  passport.serializeUser((user, done) => {
+    done(null, user.id);
+  });
+
+  // deserialize user
+  passport.deserializeUser(async (id, done) => {
+    try {
+      const user = await pool.query("SELECT * FROM users WHERE id = $1", [id]);
+      done(null, user.rows[0]);
+    } catch (e) {
+      done(e);
+    }
+  });
 };

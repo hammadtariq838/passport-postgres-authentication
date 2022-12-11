@@ -1,38 +1,80 @@
-require('dotenv').config()
+const express = require("express");
+const path = require("path");
+const ejsMate = require("ejs-mate");
+const session = require("express-session");
+const flash = require("connect-flash");
+const ExpressError = require("./utils/ExpressError");
+const methodOverride = require("method-override");
+require("dotenv").config();
+const morgan = require("morgan");
+const pool = require("./config/db");
 
-const express = require('express')
-const session = require('express-session')
-const passport = require('passport')
-const flash = require('connect-flash')
-const bodyParser = require('body-parser')
+const app = express();
 
-const app = express()
-const PORT = process.env.PORT || 3000
+app.use(morgan("dev"));
 
-const routes = require('./routes/index')
+app.engine("ejs", ejsMate);
+app.set("view engine", "ejs");
+app.set("views", path.join(__dirname, "views"));
 
-app.set('view engine', 'ejs')
-app.use(session({
-    secret: 'thatsecretthinggoeshere',
-    resave: false,
-    saveUninitialized: true
-}));
-app.use(bodyParser.urlencoded({
-    extended: true
-}))
-app.use(bodyParser.json())
-app.use(flash())
-app.use(passport.initialize())
-app.use(passport.session())
+app.use(express.urlencoded({ extended: true }));
+app.use(methodOverride("_method"));
+app.use(express.static(path.join(__dirname, "public")));
 
-app.use(function(req, res, next){
-    res.locals.message = req.flash('message');
-    next();
+// create store connect-pg-simple
+const pgSession = require("connect-pg-simple")(session);
+
+// create session store
+const sessionStore = new pgSession({
+  pool: pool,
+  createTableIfMissing: true,
 });
 
-app.use('/', routes)
-require('./config/passportConfig')(passport)
+// session config
+app.use(
+  session({
+    store: sessionStore,
+    secret: process.env.SECRET,
+    resave: false,
+    saveUninitialized: true,
+    cookie: {
+      httpOnly: true,
+      expires: Date.now() + 1000 * 60 * 60 * 24 * 7, // 1 week
+      maxAge: 1000 * 60 * 60 * 24 * 7, // 1 week
+    },
+  })
+);
+
+app.use(flash());
+
+app.use((req, res, next) => {
+  console.log(req.session);
+  res.locals.currentUser = req.user;
+  res.locals.success = req.flash("success");
+  res.locals.error = req.flash("error");
+  next();
+});
+
+// Routes
+app.use("/", require("./routes/users"));
+app.use("/campgrounds", require("./routes/campgrounds"));
+
+app.get("/", (req, res) => {
+  res.render("home");
+});
+
+app.all("*", (req, res, next) => {
+  next(new ExpressError("Page Not Found", 404));
+});
+
+app.use((err, req, res, next) => {
+  const { statusCode = 500 } = err;
+  if (!err.message) err.message = "Oh No, Something Went Wrong!";
+  res.status(statusCode).render("error", { err });
+});
+
+const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
-    console.log(`Application server started on port: ${PORT}`)
-})
+  console.log(`Application server started on http://localhost:${PORT}`);
+});
